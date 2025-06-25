@@ -15,7 +15,6 @@ import {
 } from '@google/genai';
 import { createCodeAssistContentGenerator } from '../code_assist/codeAssist.js';
 import { DEFAULT_GEMINI_MODEL } from '../config/models.js';
-import { getEffectiveModel } from './modelCheck.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -82,11 +81,7 @@ export async function createContentGeneratorConfig(
   //
   if (authType === AuthType.USE_GEMINI && geminiApiKey) {
     contentGeneratorConfig.apiKey = geminiApiKey;
-    contentGeneratorConfig.model = await getEffectiveModel(
-      contentGeneratorConfig.apiKey,
-      contentGeneratorConfig.model,
-    );
-
+    // Don't permanently change the model here, let it be checked per request
     return contentGeneratorConfig;
   }
 
@@ -98,11 +93,7 @@ export async function createContentGeneratorConfig(
   ) {
     contentGeneratorConfig.apiKey = googleApiKey;
     contentGeneratorConfig.vertexai = true;
-    contentGeneratorConfig.model = await getEffectiveModel(
-      contentGeneratorConfig.apiKey,
-      contentGeneratorConfig.model,
-    );
-
+    // Don't permanently change the model here, let it be checked per request
     return contentGeneratorConfig;
   }
 

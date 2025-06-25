@@ -14,16 +14,15 @@ import {
  * model if necessary. This function is designed to be silent.
  * @param apiKey The API key to use for the check.
  * @param currentConfiguredModel The model currently configured in settings.
- * @returns An object indicating the model to use, whether a switch occurred,
- *          and the original model if a switch happened.
+ * @returns An object indicating the model to use and whether it's a temporary fallback.
  */
 export async function getEffectiveModel(
   apiKey: string,
   currentConfiguredModel: string,
-): Promise<string> {
+): Promise<{ model: string; isTemporaryFallback: boolean }> {
   if (currentConfiguredModel !== DEFAULT_GEMINI_MODEL) {
     // Only check if the user is trying to use the specific pro model we want to fallback from.
-    return currentConfiguredModel;
+    return { model: currentConfiguredModel, isTemporaryFallback: false };
   }
 
   const modelToTest = DEFAULT_GEMINI_MODEL;
@@ -54,15 +53,15 @@ export async function getEffectiveModel(
 
     if (response.status === 429) {
       console.log(
-        `[INFO] Your configured model (${modelToTest}) was temporarily unavailable. Switched to ${fallbackModel} for this session.`,
+        `[INFO] Your configured model (${modelToTest}) is temporarily unavailable. Using ${fallbackModel} for this request.`,
       );
-      return fallbackModel;
+      return { model: fallbackModel, isTemporaryFallback: true };
     }
     // For any other case (success, other error codes), we stick to the original model.
-    return currentConfiguredModel;
+    return { model: currentConfiguredModel, isTemporaryFallback: false };
   } catch (_error) {
     clearTimeout(timeoutId);
     // On timeout or any other fetch error, stick to the original model.
-    return currentConfiguredModel;
+    return { model: currentConfiguredModel, isTemporaryFallback: false };
   }
 }

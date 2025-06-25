@@ -39,6 +39,7 @@ import {
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { DEFAULT_GEMINI_FLASH_MODEL } from '../config/models.js';
 import { AuthType } from './contentGenerator.js';
+import { getEffectiveModel } from './modelCheck.js';
 
 function isThinkingSupported(model: string) {
   if (model.startsWith('gemini-2.5')) return true;
@@ -257,6 +258,19 @@ export class GeminiClient {
     config: GenerateContentConfig = {},
   ): Promise<Record<string, unknown>> {
     try {
+      // Get the effective model for this request
+      let modelToUse = model;
+      const authType = this.config.getContentGeneratorConfig()?.authType;
+      
+      // For API key users, check model availability per request
+      if (authType === AuthType.USE_GEMINI || authType === AuthType.USE_VERTEX_AI) {
+        const apiKey = this.config.getContentGeneratorConfig()?.apiKey;
+        if (apiKey && model === this.model) {
+          const { model: effectiveModel } = await getEffectiveModel(apiKey, model);
+          modelToUse = effectiveModel;
+        }
+      }
+      
       const userMemory = this.config.getUserMemory();
       const systemInstruction = getCoreSystemPrompt(userMemory);
       const requestConfig = {
@@ -265,9 +279,12 @@ export class GeminiClient {
         ...config,
       };
 
+      // Keep track of whether we're using a fallback model for OAuth users
+      let currentModel = modelToUse;
+      
       const apiCall = () =>
         this.getContentGenerator().generateContent({
-          model,
+          model: currentModel,
           config: {
             ...requestConfig,
             systemInstruction,
@@ -278,9 +295,14 @@ export class GeminiClient {
         });
 
       const result = await retryWithBackoff(apiCall, {
-        onPersistent429: async (authType?: string) =>
-          await this.handleFlashFallback(authType),
-        authType: this.config.getContentGeneratorConfig()?.authType,
+        onPersistent429: async (auth?: string) => {
+          const fallbackModel = await this.handleFlashFallback(auth);
+          if (fallbackModel) {
+            currentModel = fallbackModel;
+          }
+          return fallbackModel;
+        },
+        authType,
       });
 
       const text = getResponseText(result);
@@ -342,7 +364,19 @@ export class GeminiClient {
     generationConfig: GenerateContentConfig,
     abortSignal: AbortSignal,
   ): Promise<GenerateContentResponse> {
-    const modelToUse = this.model;
+    // Get the effective model for this request
+    let modelToUse = this.model;
+    const authType = this.config.getContentGeneratorConfig()?.authType;
+    
+    // For API key users, check model availability per request
+    if (authType === AuthType.USE_GEMINI || authType === AuthType.USE_VERTEX_AI) {
+      const apiKey = this.config.getContentGeneratorConfig()?.apiKey;
+      if (apiKey) {
+        const { model } = await getEffectiveModel(apiKey, this.model);
+        modelToUse = model;
+      }
+    }
+    
     const configToUse: GenerateContentConfig = {
       ...this.generateContentConfig,
       ...generationConfig,
@@ -358,17 +392,25 @@ export class GeminiClient {
         systemInstruction,
       };
 
+      // Keep track of whether we're using a fallback model for OAuth users
+      let currentModel = modelToUse;
+      
       const apiCall = () =>
         this.getContentGenerator().generateContent({
-          model: modelToUse,
+          model: currentModel,
           config: requestConfig,
           contents,
         });
 
       const result = await retryWithBackoff(apiCall, {
-        onPersistent429: async (authType?: string) =>
-          await this.handleFlashFallback(authType),
-        authType: this.config.getContentGeneratorConfig()?.authType,
+        onPersistent429: async (auth?: string) => {
+          const fallbackModel = await this.handleFlashFallback(auth);
+          if (fallbackModel) {
+            currentModel = fallbackModel;
+          }
+          return fallbackModel;
+        },
+        authType,
       });
       return result;
     } catch (error: unknown) {
@@ -502,6 +544,7 @@ export class GeminiClient {
   /**
    * Handles fallback to Flash model when persistent 429 errors occur for OAuth users.
    * Uses a fallback handler if provided by the config, otherwise returns null.
+   * This now returns a temporary fallback model without permanently changing the configured model.
    */
   private async handleFlashFallback(authType?: string): Promise<string | null> {
     // Only handle fallback for OAuth users
@@ -526,8 +569,8 @@ export class GeminiClient {
       try {
         const accepted = await fallbackHandler(currentModel, fallbackModel);
         if (accepted) {
-          this.config.setModel(fallbackModel);
-          this.model = fallbackModel;
+          // Return the fallback model without permanently changing the config
+          // The retry logic will use this returned model for this specific request
           return fallbackModel;
         }
       } catch (error) {
